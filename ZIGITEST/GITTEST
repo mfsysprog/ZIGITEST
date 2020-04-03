@@ -1,0 +1,97 @@
+/* rexx */
+top
+x = time('e')
+
+/*
+text = 'Hello world!'
+
+si.0 = 1
+si.1 = text
+
+cmd = 'iconv -f ibm-037 -t iso8859-1'
+
+x = bpxwunix(cmd,si.,so.,se.)
+
+say 'in ascii: ' c2x(so.1)
+
+si.0 = 1
+si.1 = so.1
+
+cmd = 'iconv -f iso8859-1 -t ibm-037'
+
+x = bpxwunix(cmd,si.,so.,se.)
+
+say 'in ebcdic: ' so.1
+
+say
+say 'and now with syscalls'
+
+*/
+say 'Calling git using bpxwunix...'
+say
+
+env.0 = 1
+env.1 = "_BPX_SHAREAS=MUST"
+
+do k = 1 to 10
+x = bpxwunix("/var/rocket/bin/git",,so.,,env.)
+do i = 1 to 1
+   say so.i
+end
+end
+
+say 'This took about: ' time('r')
+
+say
+say
+
+say 'Calling git using syscalls...'
+say
+x = syscalls(on)
+
+/* first create some pipes for our iconv process */
+address syscall "pipe stdin."
+address syscall "pipe stdout."
+address syscall "pipe stderr."
+
+/* lets write our text to the write end of the pipe */
+address syscall "write" stdin.2 "text"
+/* we are done writing to the pipe, so lets close the write end */
+/* address syscall "close" stdin.2 */
+/* lets map the read end of the stdin. pipe and write end of others */
+map.0 = stdin.1
+map.1 = stdout.2
+map.2 = stderr.2
+/* no environments vars for now */
+env.0 = 1
+env.1 = "_BPX_SHAREAS=MUST"
+/* our iconv has 5 parms */
+parms.0 = 1
+parms.1 = "/var/rocket/bin/git"
+
+do k = 1 to 10
+   /* address syscall "spawn " parms.1 " 3 map. parms. __environment." */
+   address syscall "spawn " parms.1 " 3 map. parms. env."
+
+   spid.k = RETVAL
+   serrno = ERRNO
+
+   if spid==-1 then do
+      str ='unable to spawn' parm.1', errno='serrno
+      say str
+      exit serrno
+   end
+
+   address syscall "waitpid (spid.k) waitpid. 0"
+
+   /* lets read result from pipe */
+   /* address syscall "close" stdout.2 */
+   address syscall "read" stdout.1 "text 5000"
+
+   do 1
+      parse var text regel '15'x text
+      say regel
+   end
+end
+
+say 'This took about: ' time('E')
