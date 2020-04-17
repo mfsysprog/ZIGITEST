@@ -1,4 +1,5 @@
 /* rexx */
+   top
    localrep = ''
    zigirep = 'tmp'
    encoding = 'ibm-1047'
@@ -52,24 +53,55 @@
 /* closing the write end of the iconv_stdin will act as EOF */
    'close' iconv_stdin.2
 
-   call syscalls 'OFF'
 
 /* tag it and bag it */
    cmd = 'cd 'localrep'/'zigirep' && '
    cmd = cmd 'chtag -tc iso8859-1 .gitattributes'
    x = bpxwunix(cmd,,so.,se.)
 
+/* this does require autoconvert to be on */
+/* we use the same env for bpxwunix and syscall for honest compare */
+   env.0 = 2
+   env.1 = "_BPXK_AUTOCVT=ON"
+   env.2 = "_BPX_SHAREAS=MUST"
+
+   x = time('e')
+
 /* lets see if we can remove this string from our file */
    remove_string = '*.mobi binary'
 
-/* this does require autoconvert to be on */
-   env.0 = 1
-   env.1 = "_BPXK_AUTOCVT=ON"
 /* this uses the ex command to do a g(lobal) d(elete) of the remove_string */
 /* after which we w(rite) and q(uit).                                      */
 /* perhaps sed -i would have been nicer, but omvs doesn't have the -i flag */
    cmd = 'ex -s +"g/'remove_string'/d|w|q" 'localrep'/'zigirep'/.gitattributes'
    x = bpxwunix(cmd,,so.,se.,env.)
+
+   say 'the bpxunix ex took: ' time('r')
+
+/* and now for the syscall version */
+/* lets see if we can remove another string from this file */
+   remove_string = '*.gif binary'
+
+   parms.0 = 4
+   parms.1 = '/bin/ex'
+   parms.2 = '-s'
+   /* please note that we must *not* use the " " here */
+   parms.3 = '+g/'remove_string'/d|w|q'
+   parms.4 = localrep'/'zigirep'/.gitattributes'
+   maps.0 = -1
+/* getting errors from last syscall:
+   "strerror" errno errnojr "err."
+   do i = 1 to err.0
+      say err.i
+   end
+*/
+   'spawn /bin/ex 0 maps. parms. env.'
+   /* wait for /bin/ex to finish processing */
+   'waitpid' retval 'stemmie. 0'
+
+   say 'the syscall ex took: ' time('e')
+
+   call syscalls 'OFF'
 
 /* Create the .zigi folder in the repo and add the dsn-file */
    cmd = 'cd 'localrep'/'zigirep' && mkdir .zigi'
