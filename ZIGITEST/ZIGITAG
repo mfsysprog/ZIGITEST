@@ -1,24 +1,38 @@
 /* rexx */
    top
+   NUM_RUNS = 20
    localrep = ''
    zigirep = 'tmp'
    encoding = 'ibm-1047'
    ver = 'zigitag'
+
+   say 'We will run ex in bpxwunit and spawn each 'NUM_RUNS' times.'
+
+   call syscalls 'ON'
+/* syscall will be our default host environment */
+   address syscall
+
    cmd = 'ls' localrep'/'zigirep'/.gitattributes'
    x = bpxwunix(cmd,,so.,se.)
-/* already there */
-   call syscalls 'ON'
-   address syscall
+    /* lets remove it for now */
    if so.0 = 1 then
-   /* lets remove it for now */
-   'unlink 'path
+   'unlink 'localrep'/'zigirep'/.gitattributes'
+
+/* do the init call to our ccsidtocs routine */
+   say 'Triggering build of ccsid to code set name translation table.'
+   call ccsidtocs
+
    path = localrep"/"zigirep"/.gitattributes"
    'open' path,
      O_rdwr+O_creat+O_trunc,
      660
    if retval = -1 then exit 8
    fd = retval  /* as I think it's weird to write to a retval lol */
+
+/* setup_iconv will prepare a iconv spawn syscall                 */
+
    call setup_iconv
+
 /* we replace the default pipe write end of iconv_stdout.2 with */
 /* the fd filedescriptor, so our iconv we spawn next will write */
 /* directly to the file we opened before which has fd as its    */
@@ -26,8 +40,10 @@
 /* just as a test to see if we can have a generic setup for     */
 /* iconv that we can 'bend' later                               */
    'dup2' fd iconv_stdout.2
+
    'spawn /bin/iconv 'parms.0' map. parms. env.'
    pid = retval
+
 /* for this write we want to write to the stdin for the iconv process */
    fd_out = iconv_stdin.2
    call write ,
@@ -49,7 +65,6 @@
       ga = word(binaries,gai) 'binary'
       call write ga
    end
-   'close' fd
 /* closing the write end of the iconv_stdin will act as EOF */
    'close' iconv_stdin.2
 
@@ -73,8 +88,10 @@
 /* this uses the ex command to do a g(lobal) d(elete) of the remove_string */
 /* after which we w(rite) and q(uit).                                      */
 /* perhaps sed -i would have been nicer, but omvs doesn't have the -i flag */
+   do i = 1 to NUM_RUNS
    cmd = 'ex -s +"g/'remove_string'/d|w|q" 'localrep'/'zigirep'/.gitattributes'
-   x = bpxwunix(cmd,,so.,se.,env.)
+      x = bpxwunix(cmd,,so.,se.,env.)
+   end
 
    say 'the bpxunix ex took: ' time('r')
 
@@ -89,17 +106,27 @@
    parms.3 = '+g/'remove_string'/d|w|q'
    parms.4 = localrep'/'zigirep'/.gitattributes'
    maps.0 = -1
+   maps.1 = -1
+   maps.2 = -1
 /* getting errors from last syscall:
    "strerror" errno errnojr "err."
    do i = 1 to err.0
       say err.i
    end
 */
-   'spawn /bin/ex 0 maps. parms. env.'
+   do i = 1 to NUM_RUNS
+      'spawn /bin/ex 3 maps. parms. env.'
    /* wait for /bin/ex to finish processing */
-   'waitpid' retval 'stemmie. 0'
+      'waitpid' retval 'stemmie. 0'
+   end
 
    say 'the syscall ex took: ' time('e')
+
+/* lets check the autoconversion for .gitattributes at this point */
+   y = ccsidtocs(check_autoconversion(fd))
+   say 'file is 'y
+
+   'close' fd
 
    call syscalls 'OFF'
 
@@ -155,8 +182,9 @@ setup_iconv:
    address syscall "pipe iconv_stdout."
    address syscall "pipe iconv_stderr."
   /* set environment */
-   env.0 = 1
+   env.0 = 2
    env.1 = "_BPX_SHAREAS=MUST"
+   env.2 = "_BPX_SPAWN_SCRIPT=YES"
   /* map our pipes for iconv process */
   /* each pipe has a read end (the .1 stem) and a write end (the .2 stem) */
   /* so the stdin for iconv (map.0) will read for iconv_stdin */
@@ -179,3 +207,69 @@ write:
    'write' fd_out 'string' length(string)
    return
 
+/* this checks for autocvt setting in bpxparm                         */
+/* use SETOMVS AUTOCVT=OFF, SETOMVS AUTOCVT=ON or SETOMVS AUTOCVT=ALL */
+/* to see its effect. But only on a sandbox system, since you will    */
+/* set it for all omvs. Using the same call it is possible to set     */
+/* autocvt for the file associated with fd by setting cmd to          */
+/* CVT_SETCVTOFF, CVT_SETCVTON, CVT_SETCVTALL or CVT_SETAUTOCVTON,    */
+/* CVT_SETAUTOCVTALL. See the books for the difference.               */
+/* many commands can set env. var which can specify _BPXK_AUTOCVT to  */
+/* do it on a lower level than for the whole omvs environment,        */
+/* but safest option would be to use cmd CVT_SETCVTON to force it on  */
+/* for this fd.                                                       */
+/* For EBCDIC (1047) the CCSID is '0417'X; for ASCII (819) it is '0333'X */
+check_autoconversion:
+   arg ccsid_fd
+   pccsid = '0000'x
+   fccsid = '0000'x
+   cmd = cvt_querycvt
+   "f_control_cvt ("ccsid_fd") cmd pccsid fccsid"
+/* cmd should have autoconversion status  */
+   if cmd = CVT_SETCVTOFF then say 'Autoconversion off'
+   if cmd = CVT_SETCVTON then say 'Autoconversion on'
+   if cmd = CVT_SETCVTALL then say 'Autoconversion all'
+   say 'running program ccsid: 'c2x(pccsid)
+   say 'fccsid: 'c2x(fccsid)
+   return x2d(c2x(fccsid))
+
+/* this routines converts a ccsid to its code set name */
+/* much like the c routine from libiconv.a             */
+/* but we parse the iconv -l output                    */
+ccsidtocs:
+   arg ccsid_in
+/* first call we initialize a iconv -l which will take some time */
+   if conversion.0 = 'CONVERSION.0' & ccsid_pid = 'CCSID_PID' then do
+      'pipe ccsid_stdout.'
+      ccsid_env.0 = 2
+      ccsid_env.1 = '_BPX_SHAREAS=MUST'
+      ccsid_env.2 = '_BPX_SPAWN_SCRIPT=YES'
+      ccsid_parms.0 = 2
+      ccsid_parms.1 = '/bin/iconv'
+      ccsid_parms.2 = '-l'
+      ccsid_map.0 = -1
+      ccsid_map.1 = ccsid_stdout.2
+      ccsid_map.2 = -1
+      'spawn /bin/iconv 3 ccsid_map. ccsid_parms. ccsid_env.'
+      ccsid_pid = retval
+      return
+   end
+/* on second call we fill the conversion. stem */
+   if ccsid_pid <> -1 then do
+      'waitpid 'ccsid_pid' stemmie. 0'
+      'close 'ccsid_stdout.2
+      retval = 1
+      do while retval > 0
+         'read 'ccsid_stdout.1' regel 100000'
+         do while regel <> ''
+            parse var regel single '15'x regel
+            parse var single '05'x ccsid '05'x name '05'x
+            conversion.ccsid = name
+         end
+      end
+      conversion.0 = 'untagged'
+      ccsid_pid = -1
+   end
+/* on 2nd and subsequent calls we answer */
+   if ccsid_in <> '' then
+   return conversion.ccsid_in
